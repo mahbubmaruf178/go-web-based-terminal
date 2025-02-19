@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Terminal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" integrity="sha512-Evv84Mr4kqVGRNSgIGL/F/aIDqQb7xQ2vcrdIwxfjThSH8CSR7PBEakCr51Ck+w+/U6swU2Im1vVX0SVk9ABhg==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
+    <style>
+        body { 
+            background-color: #1e1e1e; 
+            color: white; 
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+        .active-tab { 
+            background: #2d2d2d; 
+            border-bottom: 2px solid #f39c12; 
+        }
+        .tab-btn { 
+            display: flex; 
+            align-items: center; 
+            gap: 8px; 
+            padding: 8px; 
+        }
+        .terminal-wrapper {
+            height: calc(100vh - 100px) !important;
+            transition: none;
+        }
+        .xterm-screen {
+            width: 100% !important;
+            height: 100% !important;
+        }
+        .xterm {
+            height: 100%;
+            width: 100%;
+            padding: 10px;
+        }
+        #terminal-container {
+            height: calc(100vh - 100px);
+        }
+    </style>
+</head>
+<body class="flex flex-col h-screen">
+    <div class="flex items-center bg-gray-900 p-3 text-white">
+        <h1 class="text-lg font-bold flex-grow"><i class="fas fa-terminal"></i> Web Terminal</h1>
+        <button onclick="addTerminal()" class="bg-green-600 px-4 py-2 rounded flex items-center">
+            <i class="fas fa-plus mr-2"></i> New Terminal
+        </button>
+    </div>
+
+    <div id="tabs" class="flex bg-gray-800 p-2"></div>
+    <div id="terminal-container" class="flex-grow bg-black"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit/lib/xterm-addon-fit.min.js"></script>
+    <script>
+        let terminals = {};
+        let currentTermId = null;
+
+        function addTerminal() {
+            const termId = "term-" + Date.now();
+            const socket = new WebSocket(`ws://localhost:8080/ws?id=${termId}`);
+            const term = new Terminal({
+                theme: { background: "#000000" },
+                fontSize: 14,
+                fontFamily: 'Consolas, "Courier New", monospace',
+                cursorBlink: true,
+                cols: 120,
+                rows: 40
+            });
+
+            const fitAddon = new FitAddon.FitAddon();
+            term.loadAddon(fitAddon);
+
+            terminals[termId] = { term, socket, fitAddon };
+
+            const tab = document.createElement("button");
+            tab.classList = "tab-btn bg-gray-700 text-white rounded-t cursor-pointer";
+            tab.dataset.termId = termId;
+            tab.onclick = () => switchTerminal(termId);
+
+            const termIcon = document.createElement("i");
+            termIcon.classList = "fas fa-terminal";
+            tab.appendChild(termIcon);
+
+            const tabText = document.createElement("span");
+            tabText.innerText = `Terminal ${Object.keys(terminals).length}`;
+            tab.appendChild(tabText);
+
+            const closeBtn = document.createElement("i");
+            closeBtn.classList = "fas fa-times ml-2 text-red-400 cursor-pointer";
+            closeBtn.onclick = (e) => {
+                e.stopPropagation();
+                removeTerminal(termId);
+            };
+            tab.appendChild(closeBtn);
+
+            document.getElementById("tabs").appendChild(tab);
+
+            const wrapper = document.createElement("div");
+            wrapper.id = `wrapper-${termId}`;
+            wrapper.classList = "hidden terminal-wrapper w-full h-full";
+
+            const container = document.createElement("div");
+            container.id = termId;
+            container.classList = "w-full h-full";
+            wrapper.appendChild(container);
+
+            document.getElementById("terminal-container").appendChild(wrapper);
+
+            term.open(container);
+            fitAddon.fit();
+
+            term.onData(data => socket.send(data));
+            socket.onmessage = event => term.write(event.data);
+            socket.onclose = () => term.write("\r\n[Terminal Closed]");
+
+            // Handle terminal resize
+            new ResizeObserver(() => {
+                if (currentTermId === termId) {
+                    fitAddon.fit();
+                    const dims = term.rows + ":" + term.cols;
+                    socket.send("RESIZE:" + dims);
+                }
+            }).observe(wrapper);
+
+            // Handle window resize
+            window.addEventListener('resize', () => {
+                if (currentTermId === termId) {
+                    fitAddon.fit();
+                    const dims = term.rows + ":" + term.cols;
+                    socket.send("RESIZE:" + dims);
+                }
+            });
+
+            switchTerminal(termId);
+        }
+
+        function switchTerminal(termId) {
+            currentTermId = termId;
+            document.querySelectorAll("#terminal-container > div").forEach(div => div.classList.add("hidden"));
+            document.getElementById(`wrapper-${termId}`).classList.remove("hidden");
+
+            document.querySelectorAll("#tabs > button").forEach(tab => tab.classList.remove("active-tab"));
+            document.querySelector(`[data-term-id="${termId}"]`).classList.add("active-tab");
+
+            // Fit the terminal to the new size
+            if (terminals[termId]) {
+                terminals[termId].fitAddon.fit();
+                const term = terminals[termId].term;
+                const dims = term.rows + ":" + term.cols;
+                terminals[termId].socket.send("RESIZE:" + dims);
+            }
+        }
+
+        function removeTerminal(termId) {
+            if (terminals[termId]) {
+                terminals[termId].socket.send("CLOSE");
+                terminals[termId].socket.close();
+                delete terminals[termId];
+
+                document.querySelector(`[data-term-id="${termId}"]`).remove();
+                document.getElementById(`wrapper-${termId}`).remove();
+
+                const remainingTerms = Object.keys(terminals);
+                if (remainingTerms.length > 0) {
+                    switchTerminal(remainingTerms[0]);
+                }
+            }
+        }
+    </script>
+</body>
+</html>
